@@ -79,7 +79,7 @@ def get_latest_lesson(doc_id: str) -> dict:
             "Expected format: __Lezione 39, apr 2__"
         )
 
-    last_idx = heading_indices[-1]
+   last_idx = heading_indices[0]
     raw_title = paragraphs[last_idx]['text']
     title = re.sub(r'[_*#]', '', raw_title).strip()   # strip markdown decoration
 
