@@ -46,18 +46,10 @@ def _para_text(paragraph: dict) -> str:
 
 
 def get_latest_lesson(doc_id: str) -> dict:
-    """
-    Reads the Google Doc and returns the most recent lesson's title and phrases.
-
-    Expected heading format:  __Lezione 39, apr 2__
-    Phrase format:            frase italiana == русский перевод
-                              or just:  frase italiana
-    """
     service = get_docs_service()
     doc = service.documents().get(documentId=doc_id).execute()
     body_content = doc.get('body', {}).get('content', [])
 
-    # Collect paragraphs as (text, start_index, end_index)
     paragraphs = []
     for element in body_content:
         if 'paragraph' in element:
@@ -69,7 +61,6 @@ def get_latest_lesson(doc_id: str) -> dict:
                     'end': element.get('endIndex', 0),
                 })
 
-    # Identify lesson headings — paragraphs containing "Lezione <number>"
     lezione_re = re.compile(r'Lezione\s+\d+', re.IGNORECASE)
     heading_indices = [i for i, p in enumerate(paragraphs) if lezione_re.search(p['text'])]
 
@@ -79,11 +70,10 @@ def get_latest_lesson(doc_id: str) -> dict:
             "Expected format: __Lezione 39, apr 2__"
         )
 
-   last_idx = heading_indices[0]
+    last_idx = heading_indices[0]
     raw_title = paragraphs[last_idx]['text']
-    title = re.sub(r'[_*#]', '', raw_title).strip()   # strip markdown decoration
+    title = re.sub(r'[_*#]', '', raw_title).strip()
 
-    # Collect everything after the heading until the next heading (or end of doc)
     phrase_paras = paragraphs[last_idx + 1:]
 
     phrases = []
@@ -92,7 +82,7 @@ def get_latest_lesson(doc_id: str) -> dict:
         if not text:
             continue
         if lezione_re.search(text):
-            break  # hit the next lesson — stop
+            break
 
         if '==' in text:
             italian = text.split('==')[0].strip()
