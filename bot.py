@@ -15,7 +15,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Conversation states
 GENRE, SETTING, PROTAGONIST = range(3)
 
 GENRES = {
@@ -26,10 +25,10 @@ GENRES = {
 }
 
 SETTINGS = {
-    'città':    '🏙️ Città',
-    'natura':   '🌲 Natura',
-    'scuola':   '🏫 Scuola',
-    'spazio':   '🚀 Spazio',
+    'città':   '🏙️ Città',
+    'natura':  '🌲 Natura',
+    'scuola':  '🏫 Scuola',
+    'spazio':  '🚀 Spazio',
 }
 
 PROTAGONISTS = {
@@ -80,8 +79,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error reading doc: {e}", exc_info=True)
         await msg.edit_text(
-            f"❌ Couldn't read the doc.\n\n`{e}`\n\n"
-            "Check your GOOGLE_DOC_ID and GOOGLE_CREDENTIALS.",
+            f"❌ Couldn't read the doc.\n\n`{e}`",
             parse_mode='Markdown'
         )
         return ConversationHandler.END
@@ -126,9 +124,9 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     key = query.data.replace('prot_', '')
     context.user_data['protagonist'] = key
 
-    genre_label     = GENRES[context.user_data['genre']]
-    setting_label   = SETTINGS[context.user_data['setting']]
-    prot_label      = PROTAGONISTS[key]
+    genre_label   = GENRES[context.user_data['genre']]
+    setting_label = SETTINGS[context.user_data['setting']]
+    prot_label    = PROTAGONISTS[key]
 
     await query.edit_message_text(
         f"{genre_label} ✓\n{setting_label} ✓\n{prot_label} ✓\n\n"
@@ -158,7 +156,7 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             setting=context.user_data['setting'],
         )
 
-        # 3. Write to Google Doc
+        # 3. Write to Google Doc — inserted right after the latest lesson's phrases
         await query.edit_message_text("📝 Saving to your Google Doc...")
         doc_id = os.getenv('GOOGLE_DOC_ID')
         append_story_to_doc(
@@ -167,10 +165,11 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             story=result['story'],
             translation=result.get('translation', ''),
             exercises=result.get('exercises', []),
+            insert_index=lesson['insert_index'],
             image_url=image_url,
         )
 
-        # 4. Send cover image to Telegram
+        # 4. Send cover image + story preview to Telegram
         story_preview = result['story'][:220].rsplit(' ', 1)[0] + '…'
         await query.message.reply_photo(
             photo=image_url,
@@ -178,10 +177,10 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode='Markdown'
         )
 
-        # 5. Final confirmation with doc link
+        # 5. Confirmation with doc link
         doc_link = f"https://docs.google.com/document/d/{doc_id}"
         await query.edit_message_text(
-            f"✅ *Done!* Story saved to your doc.\n\n[📄 Open Google Doc]({doc_link})",
+            f"✅ *Done!* Story saved right under your lesson.\n\n[📄 Open Google Doc]({doc_link})",
             parse_mode='Markdown'
         )
 
