@@ -18,7 +18,7 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist):
         "You are an expert Italian language teacher creating learning materials.\n\n"
         "Here are phrases from my student's most recent Italian lesson:\n\n"
         + phrases_block
-        + "\n\nCreate the following and return ONLY a raw JSON object — no markdown, no code fences, "
+        + "\n\nCreate the following and return ONLY a raw JSON object - no markdown, no code fences, "
         "no explanation, just the JSON.\n\n"
         "JSON keys:\n"
         "- \"story\": a short story in Italian (200-260 words), genre: " + genre
@@ -36,14 +36,11 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist):
     response = claude_client.messages.create(
         model='claude-sonnet-4-6',
         max_tokens=2048,
-        messages=[
-            {'role': 'user', 'content': prompt},
-        ],
+        messages=[{'role': 'user', 'content': prompt}],
     )
 
     raw = response.content[0].text.strip()
 
-    # Strip markdown code fences if Claude adds them anyway
     if raw.startswith('```'):
         raw = raw.split('```')[1]
         if raw.startswith('json'):
@@ -77,30 +74,16 @@ def generate_cover_image(image_prompt, genre, setting):
 
 
 def generate_voiceover(text):
-    try:
-        from elevenlabs import ElevenLabs
-    except ImportError:
-        raise RuntimeError("elevenlabs package not installed.")
-
-    api_key = os.getenv('ELEVENLABS_API_KEY')
-    if not api_key:
-        raise ValueError("ELEVENLABS_API_KEY is not set.")
-
-    voice_id = os.getenv('ELEVENLABS_VOICE_ID', 'CwhRBWXzGAHq8TQ4Fs17')
-
-    client = ElevenLabs(api_key=api_key)
-
-    audio_stream = client.text_to_speech.convert(
-        voice_id=voice_id,
-        text=text,
-        model_id='eleven_multilingual_v2',
-        output_format='mp3_44100_128',
+    response = openai_client.audio.speech.create(
+        model='tts-1',
+        voice='nova',        # clear, natural voice - works great for Italian
+        input=text,
     )
 
     buffer = io.BytesIO()
-    for chunk in audio_stream:
+    for chunk in response.iter_bytes():
         buffer.write(chunk)
     buffer.seek(0)
 
-    logger.info("Voiceover generated with ElevenLabs.")
+    logger.info("Voiceover generated with OpenAI TTS.")
     return buffer
