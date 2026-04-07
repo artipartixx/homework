@@ -78,20 +78,15 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error reading doc: {e}", exc_info=True)
-        await msg.edit_text(
-            f"❌ Couldn't read the doc.\n\n`{e}`",
-            parse_mode='Markdown'
-        )
+        await msg.edit_text(f"❌ Couldn't read the doc.\n\n`{e}`", parse_mode='Markdown')
         return ConversationHandler.END
 
 
 async def genre_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     key = query.data.replace('genre_', '')
     context.user_data['genre'] = key
-
     await query.edit_message_text(
         f"{GENRES[key]} ✓\n\n*Choose a setting:*",
         parse_mode='Markdown',
@@ -103,10 +98,8 @@ async def genre_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setting_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     key = query.data.replace('setting_', '')
     context.user_data['setting'] = key
-
     await query.edit_message_text(
         f"{GENRES[context.user_data['genre']]} ✓\n"
         f"{SETTINGS[key]} ✓\n\n"
@@ -124,12 +117,10 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     key = query.data.replace('prot_', '')
     context.user_data['protagonist'] = key
 
-    genre_label   = GENRES[context.user_data['genre']]
-    setting_label = SETTINGS[context.user_data['setting']]
-    prot_label    = PROTAGONISTS[key]
-
     await query.edit_message_text(
-        f"{genre_label} ✓\n{setting_label} ✓\n{prot_label} ✓\n\n"
+        f"{GENRES[context.user_data['genre']]} ✓\n"
+        f"{SETTINGS[context.user_data['setting']]} ✓\n"
+        f"{PROTAGONISTS[key]} ✓\n\n"
         f"⏳ Writing the story...",
         parse_mode='Markdown'
     )
@@ -137,7 +128,7 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lesson = context.user_data['lesson']
 
     try:
-        from story_generator import generate_story_and_exercises, generate_cover_image
+        from story_generator import generate_story_and_exercises, generate_cover_image, generate_voiceover
         from google_docs import append_story_to_doc
 
         # 1. Generate story + exercises
@@ -156,7 +147,11 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             setting=context.user_data['setting'],
         )
 
-        # 3. Write to Google Doc — inserted right after the latest lesson's phrases
+        # 3. Generate voiceover
+        await query.edit_message_text("🎙️ Recording voiceover...")
+        audio_buffer = generate_voiceover(result['story'])
+
+        # 4. Save to Google Doc
         await query.edit_message_text("📝 Saving to your Google Doc...")
         doc_id = os.getenv('GOOGLE_DOC_ID')
         append_story_to_doc(
@@ -169,7 +164,7 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             image_url=image_url,
         )
 
-        # 4. Send cover image + story preview to Telegram
+        # 5. Send cover image + story preview
         story_preview = result['story'][:220].rsplit(' ', 1)[0] + '…'
         await query.message.reply_photo(
             photo=image_url,
@@ -177,7 +172,13 @@ async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode='Markdown'
         )
 
-        # 5. Confirmation with doc link
+        # 6. Send voiceover as a voice message
+        await query.message.reply_voice(
+            voice=audio_buffer,
+            caption="🎙️ Ascolta la storia",
+        )
+
+        # 7. Final confirmation
         doc_link = f"https://docs.google.com/document/d/{doc_id}"
         await query.edit_message_text(
             f"✅ *Done!* Story saved right under your lesson.\n\n[📄 Open Google Doc]({doc_link})",
