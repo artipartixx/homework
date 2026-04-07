@@ -7,54 +7,50 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# Claude for story generation
 claude_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
-
-# OpenAI only for DALL-E image generation
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
 def generate_story_and_exercises(phrases, genre, setting, protagonist):
     phrases_block = '\n'.join('- ' + p for p in phrases)
 
-    system = (
-        "You are an expert Italian language teacher. "
-        "You create short, engaging stories that help adult learners practise vocabulary in context. "
-        "You always use modern, natural Italian. "
-        "You always respond with valid JSON only - no extra text, no markdown, no code blocks."
-    )
-
-    user = (
+    prompt = (
+        "You are an expert Italian language teacher creating learning materials.\n\n"
         "Here are phrases from my student's most recent Italian lesson:\n\n"
         + phrases_block
-        + "\n\nCreate the following materials and return them as a single JSON object with these exact keys:\n\n"
-        "1. \"story\" - A short story in Italian (200-260 words).\n"
-        "   - Genre: " + genre + "\n"
-        "   - Setting: " + setting + "\n"
-        "   - Protagonist: " + protagonist + "\n"
-        "   - Naturally use EVERY phrase listed above (bold each one like **phrase** when it appears).\n"
-        "   - Keep language appropriate for an intermediate adult learner.\n\n"
-        "2. \"translation\" - Full Russian translation of the story.\n\n"
-        "3. \"exercises\" - A list of exactly 5 fill-in-the-blank sentences in Italian.\n"
-        "   Each item format: \"Marco non e mai stato a Parigi, ma _____ visitarla. (risposta: vorrebbe)\"\n\n"
-        "4. \"image_prompt\" - One sentence in English describing the key visual scene,\n"
-        "   suitable for image generation. No text or letters in the image.\n\n"
-        "Return only the raw JSON object."
+        + "\n\nCreate the following and return ONLY a raw JSON object — no markdown, no code fences, "
+        "no explanation, just the JSON.\n\n"
+        "JSON keys:\n"
+        "- \"story\": a short story in Italian (200-260 words), genre: " + genre
+        + ", setting: " + setting
+        + ", protagonist: " + protagonist
+        + ". Use EVERY phrase naturally in the story, bold each with **phrase**.\n"
+        "- \"translation\": full Russian translation of the story.\n"
+        "- \"exercises\": list of 5 fill-in-the-blank sentences in Italian, "
+        "format: \"Sentence with _____ gap. (risposta: answer)\"\n"
+        "- \"image_prompt\": one English sentence describing the key visual scene "
+        "for image generation, no text or letters.\n\n"
+        "Respond with the JSON object only."
     )
 
     response = claude_client.messages.create(
         model='claude-sonnet-4-6',
         max_tokens=2048,
-        system=system,
         messages=[
-            {'role': 'user',      'content': user},
-            {'role': 'assistant', 'content': '{'},
+            {'role': 'user', 'content': prompt},
         ],
     )
 
-    raw = '{' + response.content[0].text
-    result = json.loads(raw)
+    raw = response.content[0].text.strip()
 
+    # Strip markdown code fences if Claude adds them anyway
+    if raw.startswith('```'):
+        raw = raw.split('```')[1]
+        if raw.startswith('json'):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    result = json.loads(raw)
     logger.info("Story generated with Claude.")
     return result
 
