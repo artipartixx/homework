@@ -2,8 +2,11 @@ import json
 import re
 import random
 import io
+import logging
 import anthropic
 import openai
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Story building blocks
@@ -92,6 +95,12 @@ def _get_text(response):
 def _level_instruction(level: str) -> str:
     level_upper = level.upper().strip()
     return LEVEL_GUIDE.get(level_upper, LEVEL_GUIDE['B1'])
+
+
+def _strip_fences(raw: str) -> str:
+    raw = re.sub(r'^```[a-z]*\n?', '', raw.strip())
+    raw = re.sub(r'\n?```$', '', raw.strip())
+    return raw.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +276,7 @@ Respond in this exact JSON format (no markdown, no code fences):
         result['plot_outline'] = plot_outline
         result['selected_phrases'] = selected_phrases
         result['genre'] = genre
+        result = self._edit_content(result, level, native_language)
         return result
 
     # ------------------------------------------------------------------
@@ -345,6 +355,7 @@ Respond in this exact JSON format (no markdown, no code fences):
 
         result['selected_phrases'] = selected_phrases
         result['genre'] = 'dialogo'
+        result = self._edit_content(result, level, native_language)
         return result
 
     # ------------------------------------------------------------------
@@ -423,6 +434,78 @@ Respond in this exact JSON format (no markdown, no code fences):
 
         result['selected_phrases'] = selected_phrases
         result['genre'] = 'articolo'
+        result = self._edit_content(result, level, native_language)
+        return result
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # STEP 3 — Editor pass (consistency, naturalness, level check)
+    # ------------------------------------------------------------------
+
+    def _edit_content(self, result: dict, level: str, native_language: str) -> dict:
+        """
+        Reviews the generated chunks for:
+        - Narrative inconsistencies (names changing, contradicting facts, timeline)
+        - Characters or objects appearing without introduction
+        - Unnatural Italian phrasing
+        - Wrong language level (too hard or too easy)
+        - Passato remoto (forbidden — replace with passato prossimo)
+
+        Returns the result dict with corrected chunks.
+        """
+        chunks = result.get('chunks', [])
+        if not chunks:
+            return result
+
+        level_instruction = _level_instruction(level)
+
+        # Build numbered chunk list for the prompt
+        chunk_list = '\n'.join(
+            f'{i+1}. IT: {c.get("italian","")}\n   {native_language}: {c.get("translation","")}'
+            for i, c in enumerate(chunks)
+        )
+
+        prompt = f"""You are an expert Italian language editor reviewing a short text for a {level} level learner.
+
+CHUNKS TO REVIEW:
+{chunk_list}
+
+CHECK FOR EACH CHUNK:
+1. Narrative consistency — do character names, facts, and timeline stay coherent across all chunks?
+2. Unintroduced elements — does anything appear (person, object, place) without being established earlier?
+3. Natural Italian — flag any awkward phrasing, calques, or unidiomatic expressions and fix them
+4. Level fit ({level}) — {level_instruction}. Fix anything too complex or too simple.
+5. Passato remoto — if found, replace with passato prossimo
+
+Fix only what needs fixing. If a chunk is fine, return it unchanged.
+Return the SAME number of chunks as input.
+
+Respond in this exact JSON format (no markdown, no code fences):
+[
+  {{
+    "italian": "corrected or unchanged Italian text",
+    "translation": "corrected or unchanged {native_language} translation"
+  }}
+]"""
+
+        response = self.client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=2048,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+
+        raw = _strip_fences(_get_text(response))
+
+        try:
+            corrected = json.loads(raw)
+            if isinstance(corrected, list) and len(corrected) == len(chunks):
+                result['chunks'] = corrected
+                logger.info("Editor pass completed successfully.")
+            else:
+                logger.warning("Editor returned wrong number of chunks — keeping original.")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Editor pass failed to parse: {e} — keeping original.")
+
         return result
 
     # ------------------------------------------------------------------
