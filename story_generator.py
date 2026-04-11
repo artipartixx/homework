@@ -104,7 +104,7 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist, student=N
         messages=[{'role': 'user', 'content': prompt}],
     )
 
-    raw = response.content[0].text.strip()
+    raw = ''.join(block.text for block in response.content if hasattr(block, 'text')).strip()
 
     if raw.startswith('```'):
         raw = raw.split('```')[1]
