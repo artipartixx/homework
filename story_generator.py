@@ -34,12 +34,6 @@ CHARACTER_ARCHETYPES = [
 
 
 def generate_story_and_exercises(phrases, genre, setting, protagonist, student=None):
-    """
-    Generate a story, translation, exercises and image prompt.
-
-    student: optional dict with keys name, language, level, interests.
-             When provided, the story is personalized for that student.
-    """
     arc       = random.choice(NARRATIVE_ARCS)
     conflict  = random.choice(CONFLICT_TYPES)
     archetype = random.choice(CHARACTER_ARCHETYPES)
@@ -48,7 +42,6 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist, student=N
 
     phrases_block = '\n'.join('- ' + p for p in phrases)
 
-    # Build student personalization block
     if student:
         student_block = (
             f"\nSTUDENT PROFILE:\n"
@@ -57,16 +50,15 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist, student=N
             f"- Level: {student['level']}\n"
             f"- Interests: {student['interests']}\n\n"
             f"Tailor the story to this student: use their interests to inspire the setting "
-            f"and character details, calibrate vocabulary complexity to their level "
-            f"(beginner = short sentences and common words, advanced = richer syntax), "
-            f"and if their interests align with any of the lesson phrases use those most prominently.\n"
+            f"and character details, calibrate vocabulary complexity to their level, "
+            f"and use the most relevant phrases prominently.\n"
         )
-        level = student['level'].lower()
+        native_language = student.get('native_language', 'Russian')
         language = student['language']
     else:
         student_block = ""
-        level = "intermediate"
-        language = "Italian"
+        native_language = 'Russian'
+        language = 'Italian'
 
     prompt = (
         f"You are a skilled {language} author writing short literary fiction for language learners.\n\n"
@@ -85,29 +77,30 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist, student=N
         f"- Write in third person. Adapt phrases to match: 'ne vado fiero' becomes 'ne va fiero', "
         f"'per conto mio' becomes 'per conto suo', etc.\n"
         f"- Do NOT copy every phrase verbatim. If a phrase is a grammar example or conjugation, "
-        f"demonstrate the concept naturally instead.\n"
+        f"demonstrate the concept naturally.\n"
         f"- Use 12-18 of the most interesting phrases. Quality over quantity.\n\n"
         f"PROSE QUALITY RULES (strict):\n"
-        f"- Specificity: name real places, objects, sensations. Not 'a bar' but 'a bar with chipped "
-        f"formica tables and a radio stuck on a football channel'.\n"
-        f"- Show don't tell: NEVER use adjectives to describe emotion. Show through action or dialogue.\n"
+        f"- Specificity: name real places, objects, sensations.\n"
+        f"- Show don't tell: never use adjectives to describe emotion.\n"
         f"- One central image: choose one concrete visual metaphor and return to it at least twice.\n"
         f"- Subtext in dialogue: characters never say exactly what they mean.\n"
         f"- Bold each incorporated lesson phrase like **phrase**.\n\n"
-        f"Start the story field with:\n"
-        f"[Arc: ... | Conflict: ... | Archetype: ... | Central image: ...]\n"
-        f"Then write the story (200-260 words).\n\n"
-        f"Return ONLY a raw JSON object - no markdown, no code fences - with these keys:\n"
-        f"- \"story\": the story in {language} including the choices header\n"
-        f"- \"translation\": full Russian translation\n"
-        f"- \"exercises\": 5 fill-in-the-blank sentences in {language}, "
-        f"format: \"Sentence _____ gap. (risposta: answer)\"\n"
+        f"OUTPUT FORMAT:\n"
+        f"Return ONLY a raw JSON object - no markdown, no code fences - with these keys:\n\n"
+        f"- \"chunks\": an array of objects, each with:\n"
+        f"    - \"italian\": exactly 3-4 lines of the story (one sentence per line)\n"
+        f"    - \"translation\": the {native_language} translation of those exact lines (one per line, matching order)\n"
+        f"  The chunks together form the complete story in order. Aim for 6-8 chunks total.\n\n"
+        f"- \"story\": the full story as one continuous block in {language} "
+        f"(for saving to Google Doc, with **bolded** phrases, no chunk breaks)\n\n"
+        f"- \"exercises\": list of 5 fill-in-the-blank sentences in {language}, "
+        f"format: \"Sentence _____ gap. (risposta: answer)\"\n\n"
         f"- \"image_prompt\": one English sentence describing the key visual scene, no text in image"
     )
 
     response = claude_client.messages.create(
         model='claude-sonnet-4-6',
-        max_tokens=2048,
+        max_tokens=3000,
         messages=[{'role': 'user', 'content': prompt}],
     )
 
@@ -126,6 +119,47 @@ def generate_story_and_exercises(phrases, genre, setting, protagonist, student=N
 
     logger.info("Story generated with Claude.")
     return result
+
+
+def format_for_telegram(lesson_title, chunks):
+    """
+    Formats the story as parallel text for Telegram.
+    3-4 lines of story, then translation in italics, separated by dividers.
+    Returns a list of message strings (split if too long for one message).
+    """
+    divider = "\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+    header = f"<b>{lesson_title}</b>\n"
+
+    blocks = []
+    for chunk in chunks:
+        italian     = chunk.get('italian', '').strip()
+        translation = chunk.get('translation', '').strip()
+        # Wrap each translation line in italic
+        translation_italic = '\n'.join(
+            f"<i>{line}</i>" for line in translation.split('\n') if line.strip()
+        )
+        blocks.append(f"{italian}\n\n{translation_italic}")
+
+    full_text = header + "\n" + divider.join(blocks)
+
+    # Split into multiple messages if over Telegram's 4096 char limit
+    messages = []
+    if len(full_text) <= 4096:
+        messages.append(full_text)
+    else:
+        # Send header + first few chunks, then continue
+        current = header + "\n"
+        for i, block in enumerate(blocks):
+            chunk_text = (divider if i > 0 else "") + block
+            if len(current) + len(chunk_text) > 4096:
+                messages.append(current)
+                current = block
+            else:
+                current += chunk_text
+        if current:
+            messages.append(current)
+
+    return messages
 
 
 def generate_cover_image(image_prompt, genre, setting):
