@@ -34,10 +34,15 @@ def _para_text(paragraph: dict) -> str:
     )
 
 
+def _utf16_len(s: str) -> int:
+    """Google Docs API uses UTF-16 code units for indices."""
+    return len(s.encode('utf-16-le')) // 2
+
+
 def get_latest_lesson(doc_id: str) -> dict:
     """
     Reads the Google Doc and returns the most recent lesson's title, phrases,
-    and the insert_index (end of the lesson's phrase block) for appending content.
+    and insert_index (end of the lesson phrase block).
 
     Latest lesson = first heading in the doc (top of document).
     Heading format: __Lezione 39, apr 2__
@@ -71,11 +76,10 @@ def get_latest_lesson(doc_id: str) -> dict:
     raw_title = paragraphs[first_idx]['text']
     title = re.sub(r'[_*#]', '', raw_title).strip()
 
-    # Collect phrase paragraphs after this heading
     phrase_paras = paragraphs[first_idx + 1:]
 
     phrases = []
-    insert_index = paragraphs[first_idx]['end']  # fallback: right after heading
+    insert_index = paragraphs[first_idx]['end']
 
     for para in phrase_paras:
         text = para['text'].strip()
@@ -83,7 +87,7 @@ def get_latest_lesson(doc_id: str) -> dict:
             insert_index = para['end']
             continue
         if lezione_re.search(text):
-            break  # hit the next lesson — stop
+            break
 
         if '==' in text:
             italian = text.split('==')[0].strip()
@@ -92,12 +96,12 @@ def get_latest_lesson(doc_id: str) -> dict:
         else:
             phrases.append(text)
 
-        insert_index = para['end']  # keep advancing to end of last phrase
+        insert_index = para['end']
 
     if not phrases:
         raise ValueError(f"No phrases found under '{title}'.")
 
-    logger.info(f"Loaded lesson '{title}' with {len(phrases)} phrases. Insert at index {insert_index}.")
+    logger.info(f"Loaded lesson '{title}' with {len(phrases)} phrases. Insert at {insert_index}.")
     return {
         'title': title,
         'phrases': phrases,
@@ -112,18 +116,16 @@ def append_story_to_doc(
     image_url: str = None,
 ) -> None:
     """
-    Inserts the generated story/dialogue/article into the Google Doc
-    right after the lesson's phrase block.
+    Inserts the generated content into the Google Doc right after the lesson phrases.
 
-    Format in the doc:
-        ─────────────────
+    Structure:
+        ────────────────────────────────────────
         Title
+        [inline image if available]
 
-        Italian sentence(s)
+        Italian sentence
         Translation
 
-        Italian sentence(s)
-        Translation
         ...
 
         Esercizi
@@ -135,57 +137,84 @@ def append_story_to_doc(
     chunks = result.get('chunks', [])
     exercises = result.get('exercises', {})
 
-    lines = [
-        '\n\n' + ('─' * 40) + '\n\n',
-        f'{title}\n\n',
-    ]
+    # --- Build before-image text ---
+    before_image = '\n\n' + ('─' * 40) + '\n\n' + title + '\n\n'
 
-    if image_url:
-        lines.append(f'[Immagine: {image_url}]\n\n')
+    # --- Build after-image text ---
+    after_lines = []
 
     for chunk in chunks:
         italian = chunk.get('italian', '').strip()
         translation = chunk.get('translation', '').strip()
         if italian:
-            lines.append(f'{italian}\n')
+            after_lines.append(italian + '\n')
         if translation:
-            lines.append(f'{translation}\n')
-        lines.append('\n')
+            after_lines.append(translation + '\n')
+        after_lines.append('\n')
 
-    # Exercises
     fill = exercises.get('fill_in_blank', [])
     tf = exercises.get('true_false', [])
     oq = exercises.get('open_question', '')
 
     if fill or tf or oq:
-        lines.append('Esercizi\n\n')
+        after_lines.append('Esercizi\n\n')
         if fill:
-            lines.append('Completa le frasi:\n')
+            after_lines.append('Completa le frasi:\n')
             for i, s in enumerate(fill, 1):
-                lines.append(f'{i}. {s}\n')
-            lines.append('\n')
+                after_lines.append(f'{i}. {s}\n')
+            after_lines.append('\n')
         if tf:
-            lines.append('Vero o falso:\n')
+            after_lines.append('Vero o falso:\n')
             for i, s in enumerate(tf, 1):
-                lines.append(f'{i}. {s}\n')
-            lines.append('\n')
+                after_lines.append(f'{i}. {s}\n')
+            after_lines.append('\n')
         if oq:
-            lines.append(f'Domanda aperta:\n{oq}\n')
+            after_lines.append(f'Domanda aperta:\n{oq}\n')
 
-    block = ''.join(lines)
+    after_image = ''.join(after_lines)
+
+    # --- Build batchUpdate requests ---
+    # Requests are processed sequentially; each index is relative to doc state
+    # after previous requests in the same batch.
+    requests = []
+
+    # 1. Insert text before the image
+    requests.append({
+        'insertText': {
+            'location': {'index': insert_index},
+            'text': before_image,
+        }
+    })
+
+    if image_url:
+        # 2. Insert inline image right after before_image text
+        img_index = insert_index + _utf16_len(before_image)
+        requests.append({
+            'insertInlineImage': {
+                'location': {'index': img_index},
+                'uri': image_url,
+                'objectSize': {
+                    'height': {'magnitude': 300, 'unit': 'PT'},
+                    'width': {'magnitude': 300, 'unit': 'PT'},
+                },
+            }
+        })
+        # 3. Insert remaining text after image (image occupies 1 index position)
+        after_index = img_index + 1
+    else:
+        after_index = insert_index + _utf16_len(before_image)
+
+    # Insert text after image (or after title if no image)
+    requests.append({
+        'insertText': {
+            'location': {'index': after_index},
+            'text': after_image,
+        }
+    })
 
     service.documents().batchUpdate(
         documentId=doc_id,
-        body={
-            'requests': [
-                {
-                    'insertText': {
-                        'location': {'index': insert_index},
-                        'text': block,
-                    }
-                }
-            ]
-        }
+        body={'requests': requests}
     ).execute()
 
     logger.info(f"Content appended to doc {doc_id} at index {insert_index}.")
