@@ -20,24 +20,21 @@ def get_sheets_service():
     token_raw = os.getenv('GOOGLE_TOKEN')
     if not token_raw:
         raise ValueError("GOOGLE_TOKEN is not set.")
-
     creds = Credentials.from_authorized_user_info(json.loads(token_raw), SCOPES)
-
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         logger.info("Google OAuth token refreshed.")
-
     return build('sheets', 'v4', credentials=creds)
 
 
-def get_all_students(sheet_id): -> list:
+def get_all_students(sheet_id: str) -> list:
     """
     Reads all student rows from the Google Sheet.
-    Returns a list of dicts like:
+    Returns a list of dicts:
     [
       {
         'name': 'Anna',
-        'language': 'Italian',
+        'language': 'Russian',
         'level': 'intermediate',
         'interests': 'music, travel, cooking',
         'doc_id': '1BxiMV...',
@@ -47,16 +44,12 @@ def get_all_students(sheet_id): -> list:
     ]
     """
     service = get_sheets_service()
-    sheet_id = os.getenv('GOOGLE_SHEET_ID')
-    if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID is not set.")
-
     result = service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
-        range='Sheet1!A1:F100',   # up to 100 students
+        range='Sheet1!A1:F100',
     ).execute()
-
     rows = result.get('values', [])
+
     if len(rows) < 2:
         raise ValueError("Sheet is empty or has no student rows. Add a header row + at least one student.")
 
@@ -64,17 +57,15 @@ def get_all_students(sheet_id): -> list:
     students = []
 
     for row in rows[1:]:
-        # Pad short rows with empty strings
         padded = row + [''] * (len(headers) - len(row))
         student = dict(zip(headers, padded))
 
-        # Skip empty rows
         if not student.get('name', '').strip():
             continue
 
         students.append({
             'name':      student.get('name', '').strip(),
-            'language':  student.get('language', 'Italian').strip(),
+            'language':  student.get('language', 'Russian').strip(),
             'level':     student.get('level', 'intermediate').strip(),
             'interests': student.get('interests', '').strip(),
             'doc_id':    student.get('doc id', '').strip(),
@@ -88,8 +79,8 @@ def get_all_students(sheet_id): -> list:
     return students
 
 
-def get_student_by_name(name: str) -> dict:
-    students = get_all_students()
+def get_student_by_name(name: str, sheet_id: str) -> dict:
+    students = get_all_students(sheet_id)
     for s in students:
         if s['name'].lower() == name.lower():
             return s
