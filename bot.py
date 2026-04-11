@@ -35,10 +35,7 @@ generator = StoryGenerator(ANTHROPIC_API_KEY, OPENAI_API_KEY)
 # Conversation states
 # ---------------------------------------------------------------------------
 
-# /generate (teacher, own doc)
 GENRE, SETTING, PROTAGONIST, DIALOGUE_TOPIC, ARTICLE_TOPIC = range(5)
-
-# /make (student delivery)
 PICK_STUDENT, MAKE_GENRE, MAKE_SETTING, MAKE_PROTAGONIST, MAKE_DIALOGUE_TOPIC, MAKE_ARTICLE_TOPIC = range(5, 11)
 
 # ---------------------------------------------------------------------------
@@ -92,8 +89,9 @@ def genre_keyboard():
 
 
 def setting_keyboard():
-    buttons = [[InlineKeyboardButton(label, callback_data=val)] for label, val in SETTINGS]
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, callback_data=val)] for label, val in SETTINGS]
+    )
 
 
 def protagonist_keyboard():
@@ -112,18 +110,19 @@ def protagonist_keyboard():
 def dialogue_topic_keyboard(student_interests=None):
     topics = list(DIALOGUE_TOPICS)
     if student_interests:
-        interests_lower = student_interests.lower()
-        keywords = [k.strip() for k in interests_lower.split(',')]
+        keywords = [k.strip().lower() for k in student_interests.split(',')]
         prioritized = [t for t in topics if any(k in t.lower() for k in keywords)]
         rest = [t for t in topics if t not in prioritized]
         topics = prioritized + rest
-    buttons = [[InlineKeyboardButton(t.capitalize(), callback_data=f'dtopic:{t}')] for t in topics]
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(t.capitalize(), callback_data=f'dtopic:{t}')] for t in topics]
+    )
 
 
 def article_topic_keyboard():
-    buttons = [[InlineKeyboardButton(t.capitalize(), callback_data=f'atopic:{t}')] for t in ARTICLE_TOPICS]
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(t.capitalize(), callback_data=f'atopic:{t}')] for t in ARTICLE_TOPICS]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +143,7 @@ async def run_generation(
 
     student_name = student['name'] if student else None
     native_language = student.get('language', 'Russian') if student else 'Russian'
+    level = student.get('level', 'B1') if student else 'B1'
 
     await query.edit_message_text('Leggo le note della lezione...')
 
@@ -160,31 +160,29 @@ async def run_generation(
         await query.edit_message_text('Nessuna frase trovata nella lezione.')
         return ConversationHandler.END
 
-    await query.edit_message_text(f'Genero il contenuto per "{lesson_title}"...')
+    await query.edit_message_text(f'Genero il contenuto per "{lesson_title}" (livello {level})...')
 
     try:
         if genre == 'dialogo':
             result = await generator.generate_dialogue(
-                phrases,
-                topic,
+                phrases, topic,
                 student_name=student_name,
                 native_language=native_language,
+                level=level,
             )
         elif genre == 'articolo':
             result = await generator.generate_article(
-                phrases,
-                topic,
+                phrases, topic,
                 student_name=student_name,
                 native_language=native_language,
+                level=level,
             )
         else:
             result = await generator.generate_story_and_exercises(
-                phrases,
-                genre,
-                setting,
-                protagonist,
+                phrases, genre, setting, protagonist,
                 student_name=student_name,
                 native_language=native_language,
+                level=level,
             )
     except Exception as e:
         logger.error(f'Generation error: {e}')
@@ -210,8 +208,9 @@ async def run_generation(
         append_story_to_doc(doc_id, result, insert_index, image_url)
     except Exception as e:
         logger.warning(f'Doc append failed: {e}')
+        await query.edit_message_text(f'Attenzione: errore nel salvare sul doc: {e}')
 
-    # Determine destination chat
+    # Destination chat
     chat_id = update.effective_chat.id
     if student and student.get('chat_id'):
         try:
@@ -222,21 +221,21 @@ async def run_generation(
     bot = context.bot
     messages = generator.format_for_telegram(result)
 
-    # Send cover image
+    # Cover image
     if image_url:
         try:
             await bot.send_photo(chat_id=chat_id, photo=image_url)
         except Exception as e:
             logger.warning(f'Photo send failed: {e}')
 
-    # Send text (parallel format)
+    # Parallel text
     for msg in messages:
         try:
             await bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
         except Exception as e:
             logger.warning(f'Message send failed: {e}')
 
-    # Send voiceover
+    # Voiceover
     if audio:
         try:
             await bot.send_audio(
@@ -266,7 +265,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /generate — teacher, own doc
+# /generate — teacher flow (own doc, default level B1)
 # ---------------------------------------------------------------------------
 
 async def generate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -343,7 +342,7 @@ async def generate_article_topic(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ---------------------------------------------------------------------------
-# /make — student delivery
+# /make — student delivery flow
 # ---------------------------------------------------------------------------
 
 async def make_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,8 +381,9 @@ async def make_pick_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data['student'] = student
+    level = student.get('level', 'B1')
     await query.edit_message_text(
-        f'Genero per {name}. Che tipo di contenuto?',
+        f'Genero per {name} (livello {level}). Che tipo di contenuto?',
         reply_markup=genre_keyboard(),
     )
     return MAKE_GENRE
