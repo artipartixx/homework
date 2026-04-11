@@ -30,7 +30,7 @@ def get_sheets_service():
     return build('sheets', 'v4', credentials=creds)
 
 
-def get_all_students() -> list:
+def get_all_students(sheet_id): -> list:
     """
     Reads all student rows from the Google Sheet.
     Returns a list of dicts like:
