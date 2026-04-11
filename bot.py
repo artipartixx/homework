@@ -3,7 +3,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, MessageHandler, filters
+    ConversationHandler, ContextTypes
 )
 from dotenv import load_dotenv
 
@@ -29,10 +29,10 @@ GENRES = {
 }
 
 SETTINGS = {
-    'citta':   'Citta',
-    'natura':  'Natura',
-    'scuola':  'Scuola',
-    'spazio':  'Spazio',
+    'citta':  'Citta',
+    'natura': 'Natura',
+    'scuola': 'Scuola',
+    'spazio': 'Spazio',
 }
 
 PROTAGONISTS = {
@@ -60,17 +60,99 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         f"Ciao! I'm your vocabulary story bot.\n\n"
-        f"Your chat ID is: `{chat_id}`\n"
+        f"Your chat ID is: <code>{chat_id}</code>\n"
         f"(Give this to your teacher to add you to the student list)\n\n"
-        f"Commands:\n"
         f"/generate - create a story for your own doc\n"
         f"/make - create and send a story to a student",
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
 
 
 # ──────────────────────────────────────────────
-# /generate  (teacher's own doc, unchanged flow)
+# Shared generation logic
+# ──────────────────────────────────────────────
+
+async def run_generation(query, context):
+    """Core generation used by both /generate and /make flows."""
+    from story_generator import (
+        generate_story_and_exercises, generate_cover_image,
+        generate_voiceover, format_for_telegram
+    )
+    from google_docs import append_story_to_doc
+
+    lesson  = context.user_data['lesson']
+    student = context.user_data.get('student')
+    doc_id  = student['doc_id'] if student else os.getenv('GOOGLE_DOC_ID')
+
+    await query.edit_message_text("Writing the story...")
+
+    result = generate_story_and_exercises(
+        phrases=lesson['phrases'],
+        genre=context.user_data['genre'],
+        setting=context.user_data['setting'],
+        protagonist=context.user_data['protagonist'],
+        student=student,
+    )
+
+    await query.edit_message_text("Generating cover image...")
+    image_url = generate_cover_image(
+        image_prompt=result.get('image_prompt', 'A warm scene'),
+        genre=context.user_data['genre'],
+        setting=context.user_data['setting'],
+    )
+
+    await query.edit_message_text("Recording voiceover...")
+    # Voiceover uses the full plain story (strip ** bold markers)
+    plain_story = result['story'].replace('**', '')
+    audio_buffer = generate_voiceover(plain_story)
+
+    await query.edit_message_text("Saving to Google Doc...")
+    append_story_to_doc(
+        doc_id=doc_id,
+        lesson_title=lesson['title'],
+        story=result['story'],
+        translation=result.get('translation', ''),
+        exercises=result.get('exercises', []),
+        insert_index=lesson['insert_index'],
+        image_url=image_url,
+    )
+
+    # Format story as parallel text for Telegram
+    chunks = result.get('chunks', [])
+    telegram_messages = format_for_telegram(lesson['title'], chunks)
+
+    # Send to student
+    if student and student.get('chat_id'):
+        # Cover image first
+        await context.bot.send_photo(
+            chat_id=student['chat_id'],
+            photo=image_url,
+        )
+        # Parallel text story
+        for msg_text in telegram_messages:
+            await context.bot.send_message(
+                chat_id=student['chat_id'],
+                text=msg_text,
+                parse_mode='HTML'
+            )
+        # Voiceover
+        await context.bot.send_voice(
+            chat_id=student['chat_id'],
+            voice=audio_buffer,
+        )
+        audio_buffer.seek(0)
+
+    # Confirm to teacher with doc link
+    doc_link = f"https://docs.google.com/document/d/{doc_id}"
+    recipient = f"Sent to {student['name']}!" if student else "Saved to your doc."
+    await query.edit_message_text(
+        f"{recipient}\n\n<a href='{doc_link}'>Open Google Doc</a>",
+        parse_mode='HTML'
+    )
+
+
+# ──────────────────────────────────────────────
+# /generate  (teacher's own doc)
 # ──────────────────────────────────────────────
 
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,23 +162,23 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         lesson = get_latest_lesson(os.getenv('GOOGLE_DOC_ID'))
-        context.user_data['lesson'] = lesson
-        context.user_data['student'] = None  # no student profile
+        context.user_data['lesson']  = lesson
+        context.user_data['student'] = None
 
         preview = '\n'.join(f"- {p}" for p in lesson['phrases'][:6])
         if len(lesson['phrases']) > 6:
             preview += f"\n  (+{len(lesson['phrases']) - 6} more)"
 
         await msg.edit_text(
-            f"*{lesson['title']}*\n\n{preview}\n\nChoose a genre:",
-            parse_mode='Markdown',
+            f"<b>{lesson['title']}</b>\n\n{preview}\n\nChoose a genre:",
+            parse_mode='HTML',
             reply_markup=make_keyboard(GENRES, 'genre_')
         )
         return GENRE
 
     except Exception as e:
         logger.error(f"Error in /generate: {e}", exc_info=True)
-        await msg.edit_text(f"Could not read the doc.\n\n`{e}`", parse_mode='Markdown')
+        await msg.edit_text(f"Could not read the doc.\n\n<code>{e}</code>", parse_mode='HTML')
         return ConversationHandler.END
 
 
@@ -106,7 +188,7 @@ async def genre_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = query.data.replace('genre_', '')
     context.user_data['genre'] = key
     await query.edit_message_text(
-        f"{GENRES[key]} chosen.\n\nChoose a setting:",
+        f"{GENRES[key]} chosen. Choose a setting:",
         reply_markup=make_keyboard(SETTINGS, 'setting_')
     )
     return SETTING
@@ -118,7 +200,7 @@ async def setting_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = query.data.replace('setting_', '')
     context.user_data['setting'] = key
     await query.edit_message_text(
-        f"{GENRES[context.user_data['genre']]} / {SETTINGS[key]}\n\nWho is the protagonist?",
+        f"{GENRES[context.user_data['genre']]} / {SETTINGS[key]}. Who is the protagonist?",
         reply_markup=make_keyboard(PROTAGONISTS, 'prot_')
     )
     return PROTAGONIST
@@ -127,92 +209,17 @@ async def setting_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    key = query.data.replace('prot_', '')
-    context.user_data['protagonist'] = key
-
-    await query.edit_message_text("Writing the story...")
-
-    lesson  = context.user_data['lesson']
-    student = context.user_data.get('student')
-    doc_id  = student['doc_id'] if student else os.getenv('GOOGLE_DOC_ID')
-
+    context.user_data['protagonist'] = query.data.replace('prot_', '')
     try:
-        from story_generator import generate_story_and_exercises, generate_cover_image, generate_voiceover
-        from google_docs import append_story_to_doc
-
-        result = generate_story_and_exercises(
-            phrases=lesson['phrases'],
-            genre=context.user_data['genre'],
-            setting=context.user_data['setting'],
-            protagonist=context.user_data['protagonist'],
-            student=student,
-        )
-
-        await query.edit_message_text("Generating cover image...")
-        image_url = generate_cover_image(
-            image_prompt=result.get('image_prompt', 'A warm Italian scene'),
-            genre=context.user_data['genre'],
-            setting=context.user_data['setting'],
-        )
-
-        await query.edit_message_text("Recording voiceover...")
-        audio_buffer = generate_voiceover(result['story'])
-
-        await query.edit_message_text("Saving to Google Doc...")
-        append_story_to_doc(
-            doc_id=doc_id,
-            lesson_title=lesson['title'],
-            story=result['story'],
-            translation=result.get('translation', ''),
-            exercises=result.get('exercises', []),
-            insert_index=lesson['insert_index'],
-            image_url=image_url,
-        )
-
-        # Send to student's Telegram if this is a /make flow
-        if student and student.get('chat_id'):
-            story_preview = result['story'][:220].rsplit(' ', 1)[0] + '...'
-            await context.bot.send_photo(
-                chat_id=student['chat_id'],
-                photo=image_url,
-                caption=f"*{lesson['title']}*\n\n_{story_preview}_",
-                parse_mode='Markdown'
-            )
-            await context.bot.send_voice(
-                chat_id=student['chat_id'],
-                voice=audio_buffer,
-                caption="Listen to your story",
-            )
-            audio_buffer.seek(0)  # reset for teacher preview below
-
-        # Send cover image + voice to teacher as confirmation
-        story_preview = result['story'][:220].rsplit(' ', 1)[0] + '...'
-        await query.message.reply_photo(
-            photo=image_url,
-            caption=f"*{lesson['title']}*\n\n_{story_preview}_",
-            parse_mode='Markdown'
-        )
-        await query.message.reply_voice(
-            voice=audio_buffer,
-            caption="Voiceover",
-        )
-
-        doc_link = f"https://docs.google.com/document/d/{doc_id}"
-        recipient = f"Sent to {student['name']}!" if student else "Saved to your doc."
-        await query.edit_message_text(
-            f"Done! {recipient}\n\n[Open Google Doc]({doc_link})",
-            parse_mode='Markdown'
-        )
-
+        await run_generation(query, context)
     except Exception as e:
         logger.error(f"Generation error: {e}", exc_info=True)
-        await query.edit_message_text(f"Something went wrong:\n\n`{e}`", parse_mode='Markdown')
-
+        await query.edit_message_text(f"Something went wrong:\n\n<code>{e}</code>", parse_mode='HTML')
     return ConversationHandler.END
 
 
 # ──────────────────────────────────────────────
-# /make  (student delivery flow)
+# /make  (student delivery)
 # ──────────────────────────────────────────────
 
 async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -228,15 +235,12 @@ async def make(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(s['name'], callback_data=f"student_{s['name']}")]
             for s in students
         ]
-        await msg.edit_text(
-            "Which student?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await msg.edit_text("Which student?", reply_markup=InlineKeyboardMarkup(keyboard))
         return PICK_STUDENT
 
     except Exception as e:
         logger.error(f"Error loading students: {e}", exc_info=True)
-        await msg.edit_text(f"Could not load students.\n\n`{e}`", parse_mode='Markdown')
+        await msg.edit_text(f"Could not load students.\n\n<code>{e}</code>", parse_mode='HTML')
         return ConversationHandler.END
 
 
@@ -244,18 +248,19 @@ async def student_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    name = query.data.replace('student_', '')
+    name    = query.data.replace('student_', '')
     student = context.user_data['students'].get(name)
     if not student:
         await query.edit_message_text("Student not found. Try /make again.")
         return ConversationHandler.END
 
-    # Load student's Google Doc
     from google_docs import get_latest_lesson
     try:
         lesson = get_latest_lesson(student['doc_id'])
     except Exception as e:
-        await query.edit_message_text(f"Could not read {name}'s doc.\n\n`{e}`", parse_mode='Markdown')
+        await query.edit_message_text(
+            f"Could not read {name}'s doc.\n\n<code>{e}</code>", parse_mode='HTML'
+        )
         return ConversationHandler.END
 
     context.user_data['lesson']  = lesson
@@ -266,10 +271,10 @@ async def student_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         preview += f"\n  (+{len(lesson['phrases']) - 6} more)"
 
     await query.edit_message_text(
-        f"*{student['name']}* - {student['level']} - {student['language']}\n"
+        f"<b>{student['name']}</b> - {student['level']} - {student['language']}\n"
         f"Interests: {student['interests']}\n\n"
-        f"*{lesson['title']}*\n\n{preview}\n\nChoose a genre:",
-        parse_mode='Markdown',
+        f"<b>{lesson['title']}</b>\n\n{preview}\n\nChoose a genre:",
+        parse_mode='HTML',
         reply_markup=make_keyboard(GENRES, 'makegenre_')
     )
     return MAKE_GENRE
@@ -281,7 +286,7 @@ async def make_genre_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = query.data.replace('makegenre_', '')
     context.user_data['genre'] = key
     await query.edit_message_text(
-        f"{GENRES[key]} chosen.\n\nChoose a setting:",
+        f"{GENRES[key]} chosen. Choose a setting:",
         reply_markup=make_keyboard(SETTINGS, 'makesetting_')
     )
     return MAKE_SETTING
@@ -293,7 +298,7 @@ async def make_setting_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
     key = query.data.replace('makesetting_', '')
     context.user_data['setting'] = key
     await query.edit_message_text(
-        f"{GENRES[context.user_data['genre']]} / {SETTINGS[key]}\n\nWho is the protagonist?",
+        f"{GENRES[context.user_data['genre']]} / {SETTINGS[key]}. Who is the protagonist?",
         reply_markup=make_keyboard(PROTAGONISTS, 'makeprot_')
     )
     return MAKE_PROTAGONIST
@@ -302,10 +307,12 @@ async def make_setting_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def make_protagonist_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    key = query.data.replace('makeprot_', '')
-    context.user_data['protagonist'] = key
-    # Reuse the same generation logic
-    await protagonist_chosen(update, context)
+    context.user_data['protagonist'] = query.data.replace('makeprot_', '')
+    try:
+        await run_generation(query, context)
+    except Exception as e:
+        logger.error(f"Generation error: {e}", exc_info=True)
+        await query.edit_message_text(f"Something went wrong:\n\n<code>{e}</code>", parse_mode='HTML')
     return ConversationHandler.END
 
 
@@ -329,7 +336,6 @@ def main():
 
     app = Application.builder().token(token).build()
 
-    # /generate — teacher's own doc
     generate_conv = ConversationHandler(
         entry_points=[CommandHandler('generate', generate)],
         states={
@@ -341,14 +347,13 @@ def main():
         per_message=False,
     )
 
-    # /make — student delivery
     make_conv = ConversationHandler(
         entry_points=[CommandHandler('make', make)],
         states={
-            PICK_STUDENT:    [CallbackQueryHandler(student_chosen,         pattern='^student_')],
-            MAKE_GENRE:      [CallbackQueryHandler(make_genre_chosen,      pattern='^makegenre_')],
-            MAKE_SETTING:    [CallbackQueryHandler(make_setting_chosen,    pattern='^makesetting_')],
-            MAKE_PROTAGONIST:[CallbackQueryHandler(make_protagonist_chosen, pattern='^makeprot_')],
+            PICK_STUDENT:     [CallbackQueryHandler(student_chosen,          pattern='^student_')],
+            MAKE_GENRE:       [CallbackQueryHandler(make_genre_chosen,       pattern='^makegenre_')],
+            MAKE_SETTING:     [CallbackQueryHandler(make_setting_chosen,     pattern='^makesetting_')],
+            MAKE_PROTAGONIST: [CallbackQueryHandler(make_protagonist_chosen, pattern='^makeprot_')],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
         per_message=False,
