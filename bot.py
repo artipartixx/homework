@@ -13,6 +13,7 @@ from telegram.ext import (
 from story_generator import StoryGenerator, DIALOGUE_TOPICS, ARTICLE_TOPICS
 from google_docs import get_latest_lesson, append_story_to_doc
 from google_sheets import get_all_students
+from sorter import classify_vocab, insert_vocab_to_doc
 
 load_dotenv()
 
@@ -462,6 +463,46 @@ async def make_article_topic(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# /sort — classify and color-code last lesson vocab in the doc
+# ---------------------------------------------------------------------------
+
+async def sort_vocab(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('Leggo le parole della lezione...')
+
+    try:
+        lesson_data = get_latest_lesson(GOOGLE_DOC_ID)
+        phrases = lesson_data['phrases']
+        insert_index = lesson_data['insert_index']
+        lesson_title = lesson_data['title']
+    except Exception as e:
+        await update.message.reply_text(f'Errore nel leggere il doc: {e}')
+        return
+
+    await update.message.reply_text(
+        f'Trovate {len(phrases)} parole in "{lesson_title}". Classifico con Claude...'
+    )
+
+    try:
+        vocab = classify_vocab(phrases)
+    except Exception as e:
+        await update.message.reply_text(f'Errore nella classificazione: {e}')
+        return
+
+    await update.message.reply_text('Scrivo nel doc con i colori...')
+
+    try:
+        insert_vocab_to_doc(GOOGLE_DOC_ID, vocab, insert_index)
+    except Exception as e:
+        await update.message.reply_text(f'Errore nel scrivere sul doc: {e}')
+        return
+
+    await update.message.reply_text(
+        f'Fatto! {len(vocab)} parole classificate e inserite nel doc.'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Cancel
 # ---------------------------------------------------------------------------
 
@@ -478,6 +519,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('sort', sort_vocab))
 
     generate_handler = ConversationHandler(
         entry_points=[CommandHandler('generate', generate_start)],
